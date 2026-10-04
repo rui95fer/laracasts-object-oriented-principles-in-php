@@ -1,0 +1,19 @@
+# Composer dependencies and local executable
+/vendor/
+/composer.phar
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# PHPUnit cache
+/.phpunit.cache/
+/.phpunit.result.cache
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# PhpStorm project files
+/.idea/
