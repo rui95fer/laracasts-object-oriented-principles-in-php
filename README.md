@@ -229,3 +229,146 @@
   ```
 
 > **Takeaway:** DTOs give related data a consistent structure, PHP types catch invalid arguments at runtime, and static analysis can check the item types inside arrays before execution.
+
+## Episode 04 — Dependencies, Coupling, and Interfaces
+
+- **What is a dependency?** It is something a method or class needs to do its job. The `User` parameter declares that `subscribe()` needs a user; this initial example uses constructor property promotion from PHP 8.
+  ```php
+  class User
+  {
+      public function __construct(public string $emailAddress)
+      {
+      }
+  }
+
+  class Newsletter
+  {
+      public function subscribe(User $user)
+      {
+          // Subscription logic goes here.
+      }
+  }
+
+  $newsletter = new Newsletter();
+  $newsletter->subscribe(new User('jane@example.com'));
+  ```
+
+- **What does coupling mean?** Coupled code is linked to another type or implementation. Creating a specific provider inside `Newsletter` ties it to that provider; this may be acceptable, but switching services requires changing the class.
+  ```php
+  // Illustrative pseudocode: these are made-up SDK and database APIs.
+  public function subscribe(User $user)
+  {
+      $api = new CampaignMonitorAPI();
+      $api->addApiKey('example-api-key');
+      $list = $api->findList('default');
+      $list->addToList($user->emailAddress);
+
+      $user->update(['newsletterSubscribed' => true]);
+      return true;
+  }
+  ```
+
+- **How does a provider wrapper hide complexity?** Move the service-specific code into a class with a simple method. This gives `Newsletter` a clearer API to call, although it still depends on the concrete provider until we introduce an interface.
+  ```php
+  // After: extract the SDK operations from the method above.
+  class CampaignMonitorProvider
+  {
+      public function addToList(string $list, string $emailAddress): void
+      {
+          // Illustrative pseudocode: not a real CampaignMonitor API.
+          $api = new CampaignMonitorAPI();
+          $api->addApiKey('example-api-key');
+          $subscriberList = $api->findList($list);
+          $subscriberList->addToList($emailAddress);
+      }
+  }
+
+  // Inside Newsletter::subscribe():
+  $provider = new CampaignMonitorProvider();
+  $provider->addToList('default', $user->emailAddress);
+  // The illustrative user update and return follow as before.
+  ```
+
+- **What does an interface require?** An interface declares a contract: implementing classes must provide its methods with compatible signatures. Here, each provider must accept a list and email address, and `void` means the method returns no value; the interface supplies no method body.
+  ```php
+  interface NewsletterProvider
+  {
+      public function addToList(string $list, string $emailAddress): void;
+  }
+
+  // Replace the earlier provider definition with this implementation.
+  class CampaignMonitorProvider implements NewsletterProvider
+  {
+      public function addToList(string $list, string $emailAddress): void
+      {
+          // The CampaignMonitor SDK operations from above go here.
+      }
+  }
+  // Omitting addToList(), or declaring an incompatible signature,
+  // makes the implementation invalid.
+  ```
+
+- **How does method injection remove the specific provider dependency?** Pass the dependency into the method rather than create it inside. A `NewsletterProvider` type accepts an object implementing that interface; it does not create an interface instance.
+  ```php
+  // Replace the earlier Newsletter; use User and the provider above.
+  class Newsletter
+  {
+      public function subscribe(User $user, NewsletterProvider $provider): bool
+      {
+          $provider->addToList('default', $user->emailAddress);
+          // Illustrative database update omitted:
+          // $user->update(['newsletterSubscribed' => true]);
+          return true;
+      }
+  }
+
+  $newsletter = new Newsletter();
+  $newsletter->subscribe(
+      new User('jane@example.com'),
+      new CampaignMonitorProvider(),
+  );
+  ```
+
+- **When is constructor injection useful?** Pass a dependency into the constructor when multiple methods need the same object, then store it as a property. This PHP 8 example uses a public promoted property to match the lesson; visibility and encapsulation come later.
+  ```php
+  // Replace the method-injection version of Newsletter.
+  class Newsletter
+  {
+      public function __construct(public NewsletterProvider $provider)
+      {
+      }
+
+      public function subscribe(User $user): bool
+      {
+          $this->provider->addToList('default', $user->emailAddress);
+          // The illustrative database update is omitted here too.
+          return true;
+      }
+  }
+
+  $newsletter = new Newsletter(new CampaignMonitorProvider());
+  $newsletter->subscribe(new User('jane@example.com'));
+  ```
+
+- **How can you switch services without editing `Newsletter`?** Supply another object implementing `NewsletterProvider`. Each provider translates the shared `addToList()` method into its own service's API calls; the implementation body below is intentionally omitted.
+  ```php
+  class PostmarkProvider implements NewsletterProvider
+  {
+      public function addToList(string $list, string $emailAddress): void
+      {
+          // Service-specific integration would go here.
+      }
+  }
+
+  // Use the constructor-injection Newsletter and User above.
+  $user = new User('jane@example.com');
+
+  // Choose one provider when constructing the newsletter.
+  $newsletter = new Newsletter(new CampaignMonitorProvider());
+  // Or replace that construction with:
+  $newsletter = new Newsletter(new PostmarkProvider());
+
+  $newsletter->subscribe($user);
+  ```
+
+> **Takeaway:** Isolate service details in provider classes and inject an object that follows a shared interface, so `Newsletter` can work with different providers through the same contract.
