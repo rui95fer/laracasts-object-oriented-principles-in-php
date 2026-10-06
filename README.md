@@ -372,3 +372,173 @@
   ```
 
 > **Takeaway:** Isolate service details in provider classes and inject an object that follows a shared interface, so `Newsletter` can work with different providers through the same contract.
+
+## Episode 05 — Inheritance and Abstract Classes
+
+- **When does inheritance fit?** Use it when the child class is a kind of the parent class: a `Cart` is a `Vehicle`. The child, also called a subclass, uses `extends` to inherit properties and methods from its parent.
+  ```php
+  class Vehicle
+  {
+      public function accelerate(): void
+      {
+          echo 'Accelerating';
+      }
+  }
+
+  class Cart extends Vehicle
+  {
+  }
+
+  (new Cart())->accelerate(); // Accelerating
+  ```
+
+- **How does a child change inherited behavior?** Override the method by defining it in the child with a compatible signature. Calling that method on the child now uses its implementation; without the override, it uses the inherited one.
+  ```php
+  // Replace Cart above; keep Vehicle.
+  class Cart extends Vehicle
+  {
+      public function accelerate(): void
+      {
+          echo 'Rolling';
+      }
+  }
+
+  (new Cart())->accelerate(); // Rolling
+  ```
+
+- **How can subclasses share initialization but behave differently?** A child inherits its parent's constructor when it does not define its own. Here, `EmailNotification` inherits the message property and initialization, then overrides `send()`; the echoed messages only simulate delivery. Constructor property promotion requires PHP 8.
+  ```php
+  class Notification
+  {
+      public function __construct(public string $message)
+      {
+      }
+
+      public function send(): void
+      {
+          echo 'Show pop-up flash message: ' . $this->message;
+      }
+  }
+
+  class EmailNotification extends Notification
+  {
+      public function send(): void
+      {
+          echo 'Send email: ' . $this->message;
+      }
+  }
+
+  $notification = new EmailNotification('Your subscription renewal failed.');
+  echo $notification->message . PHP_EOL;
+  $notification->send();
+  ```
+  ```text
+  Your subscription renewal failed.
+  Send email: Your subscription renewal failed.
+  ```
+
+- **How can achievements share data while using different qualification rules?** Put the name, description, and icon in the parent, then give each subclass its own `qualifier()` method returning whether a user qualifies. This illustrative PHP 8 example uses counts stored on a dummy user; a real application would obtain them from its data.
+  ```php
+  // Separate example: this User replaces Episode 04's User.
+  class User
+  {
+      public function __construct(
+          public int $postCount,
+          public int $commentCount,
+      ) {
+      }
+  }
+
+  class Achievement
+  {
+      public function __construct(
+          public string $name,
+          public string $description,
+          public string $icon,
+      ) {
+      }
+  }
+
+  class FirstPostAchievement extends Achievement
+  {
+      public function qualifier(User $user): bool
+      {
+          return $user->postCount > 0;
+      }
+  }
+
+  $firstPost = new FirstPostAchievement(
+      'First Post',
+      'Granted when you create your first post.',
+      'first-post.svg',
+  );
+
+  $user = new User(postCount: 1, commentCount: 0);
+  echo $firstPost->qualifier($user) ? 'They qualify' : 'They do not qualify';
+  // They qualify
+  ```
+
+- **What does an abstract class prevent?** Declaring a class `abstract` prevents creating it directly while still letting subclasses inherit its data and implemented methods. Use it for a shared base such as `Achievement`, where you intend to create specific achievements.
+  ```php
+  // Replace Achievement above; keep User and FirstPostAchievement.
+  abstract class Achievement
+  {
+      public function __construct(
+          public string $name,
+          public string $description,
+          public string $icon,
+      ) {
+      }
+  }
+
+  // Invalid: new Achievement('First Post', 'Your first post.', 'first-post.svg');
+  // Error: cannot instantiate abstract class Achievement.
+
+  // Correct: create a concrete subclass using the inherited constructor.
+  $firstPost = new FirstPostAchievement(
+      'First Post',
+      'Granted when you create your first post.',
+      'first-post.svg',
+  );
+  ```
+
+- **How does an abstract method require subclass behavior?** Declare the method without a body, ending it with a semicolon. Every concrete subclass must provide a compatible implementation, directly or through inheritance; a subclass that leaves it unimplemented must also be abstract. This ensures every usable achievement has a qualification rule.
+  ```php
+  // Replace Achievement again; keep User and FirstPostAchievement above.
+  abstract class Achievement
+  {
+      public function __construct(
+          public string $name,
+          public string $description,
+          public string $icon,
+      ) {
+      }
+
+      abstract public function qualifier(User $user): bool;
+  }
+
+  // FirstPostAchievement already satisfies this requirement.
+  class TalkativeAchievement extends Achievement
+  {
+      public function qualifier(User $user): bool
+      {
+          return $user->commentCount >= 200;
+      }
+  }
+
+  $talkative = new TalkativeAchievement(
+      'Talkative',
+      'Granted when you write at least 200 comments.',
+      'talkative.svg',
+  );
+
+  var_dump($talkative->qualifier(new User(postCount: 0, commentCount: 199)));
+  var_dump($talkative->qualifier(new User(postCount: 0, commentCount: 200)));
+  // Omitting qualifier() from this concrete subclass would cause a fatal error.
+  ```
+  ```text
+  bool(false)
+  bool(true)
+  ```
+
+> **Takeaway:** Inheritance lets specialized classes share data and behavior; abstract classes prevent direct instantiation, and abstract methods require concrete subclasses to supply the missing behavior.
