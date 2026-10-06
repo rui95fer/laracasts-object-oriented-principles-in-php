@@ -542,3 +542,120 @@
   ```
 
 > **Takeaway:** Inheritance lets specialized classes share data and behavior; abstract classes prevent direct instantiation, and abstract methods require concrete subclasses to supply the missing behavior.
+
+## Episode 06 — Interfaces as Feature Filters
+
+- **What is duck typing, and where can it fail?** Duck typing means using an object based on the behavior it offers. An untyped parameter lets the action below work with anything offering `isLiked()` and `like()`, but a missing method causes an error when called.
+  ```php
+  class PerformLike
+  {
+      public function handle($model)
+      {
+          if ($model->isLiked()) {
+              return;
+          }
+
+          $model->like();
+      }
+  }
+
+  class Thread
+  {
+      public function like()
+      {
+          echo 'Like the thread';
+      }
+  }
+
+  (new PerformLike())->handle(new Thread());
+  // Error: call to undefined method Thread::isLiked().
+  ```
+
+- **Why can concrete parameter types become limiting?** A `Comment` type accepts only comments and their subclasses. A union type such as `Comment|Post` accepts either named type, but adding a different likeable class still requires editing the parameter type. Union types require PHP 8.
+  ```php
+  // Alternative signatures for PerformLike::handle(); bodies omitted.
+  // Accepts Comment, but rejects an unrelated Post even with both methods:
+  public function handle(Comment $model) { /* ... */ }
+
+  // Accepts Comment or Post, but rejects an unrelated Thread:
+  public function handle(Comment|Post $model) { /* ... */ }
+  ```
+
+- **How can an interface describe a feature?** Name the ability the caller needs and declare its required methods. `CanBeLiked` represents something that can be liked, allowing different kinds of objects to share the same contract without sharing a parent class.
+  ```php
+  interface CanBeLiked
+  {
+      public function like();
+      public function isLiked();
+  }
+  ```
+
+- **Does having the right methods automatically satisfy an interface type?** No: a class must explicitly use `implements CanBeLiked` and provide compatible public methods. Without `implements`, passing it to a `CanBeLiked` parameter causes a `TypeError`, even if the method names match. These examples echo messages and hard-code the liked status; no data is stored.
+  ```php
+  class Post implements CanBeLiked
+  {
+      public function like()
+      {
+          echo 'Like the post' . PHP_EOL;
+      }
+
+      public function isLiked()
+      {
+          return false;
+      }
+  }
+
+  class Comment implements CanBeLiked
+  {
+      public function like()
+      {
+          echo 'Like the comment' . PHP_EOL;
+      }
+
+      public function isLiked()
+      {
+          return true;
+      }
+  }
+  ```
+
+- **How does an action use a capability contract?** Type its parameter as `CanBeLiked`, so PHP accepts objects implementing that interface and the editor can suggest its methods. A dedicated action can group the steps involved in liking; return early when the object is already liked, otherwise call `like()` before any additional steps.
+  ```php
+  // Replace the untyped PerformLike above; use the interface and classes above.
+  class PerformLike
+  {
+      public function handle(CanBeLiked $model)
+      {
+          if ($model->isLiked()) {
+              return;
+          }
+
+          $model->like();
+          // Database updates, activity recording, and notifications are omitted.
+      }
+  }
+
+  $action = new PerformLike();
+  $action->handle(new Post());    // Prints: Like the post
+  $action->handle(new Comment()); // Already liked: returns without output.
+  ```
+
+- **How do you add another likeable class without changing the action?** Implement `CanBeLiked` and supply both required methods. PHP rejects a concrete implementation missing `isLiked()`, and an editor can highlight the omission. Replace the incomplete `Thread` above with this version, then pass it to the same action.
+  ```php
+  class Thread implements CanBeLiked
+  {
+      public function like()
+      {
+          echo 'Like the thread' . PHP_EOL;
+      }
+
+      public function isLiked()
+      {
+          return false;
+      }
+  }
+
+  (new PerformLike())->handle(new Thread()); // Prints: Like the thread
+  ```
+
+> **Takeaway:** An interface can describe an ability: type a parameter by the behavior it needs, and any class explicitly implementing that contract can be used.
