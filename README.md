@@ -659,3 +659,154 @@
   ```
 
 > **Takeaway:** An interface can describe an ability: type a parameter by the behavior it needs, and any class explicitly implementing that contract can be used.
+
+## Episode 07 — Encapsulation and Visibility
+
+- **What is encapsulation?** It restricts access to an object's internals. Visibility keywords let you choose which properties and methods callers can use and which stay inside the class; this example uses PHP 8 constructor property promotion.
+  ```php
+  // Separate example: replace Episode 01's Person if using the same file.
+  class Person
+  {
+      public function __construct(public string $name)
+      {
+      }
+
+      private function thingsThatKeepUpAtNight(): string
+      {
+          return 'Bob is afraid of dying.';
+      }
+  }
+
+  $bob = new Person('Bob');
+  ```
+
+- **What belongs to an object's public interface?** Its public properties and methods are available to callers outside the class. A public property can be read and changed directly; use the `Person` above.
+  ```php
+  echo $bob->name; // Bob
+  $bob->name = 'Robert';
+  echo $bob->name; // Robert
+  ```
+
+- **What does private visibility allow?** Only code within the declaring class can access a private property or method. Public methods can use those internals without exposing them directly.
+  ```php
+  // Independent illustrative example (PHP 8).
+  class EmailContact
+  {
+      public function __construct(private string $email)
+      {
+      }
+
+      public function getEmail(): string
+      {
+          return $this->formatEmail();
+      }
+
+      private function formatEmail(): string
+      {
+          return str_replace('@', ' at ', $this->email);
+      }
+  }
+
+  $contact = new EmailContact('jane@example.com');
+  echo $contact->getEmail(); // jane at example.com
+
+  // Invalid: echo $contact->email;
+  // Error: cannot access private property EmailContact::$email.
+  // Invalid: $contact->formatEmail();
+  // Error: call to private method EmailContact::formatEmail().
+  ```
+
+- **How does protected differ from private?** Protected members are accessible within the class and its subclasses, but external callers still cannot access them. A private helper in the parent would not be callable from the child method below.
+  ```php
+  // Illustrative example: output simulates notification delivery.
+  class Notification
+  {
+      protected function formatMessage(string $message): string
+      {
+          return trim($message);
+      }
+  }
+
+  class EmailNotification extends Notification
+  {
+      public function send(string $message): void
+      {
+          echo $this->formatMessage($message);
+      }
+  }
+
+  $notification = new EmailNotification();
+  $notification->send('  Your subscription renewed.  ');
+  // Prints: Your subscription renewed.
+
+  // Invalid: $notification->formatMessage('Hello');
+  // Error: call to protected method Notification::formatMessage().
+  ```
+
+- **How do you choose a method's visibility?** Make operations public when callers need them; hide helpers used to carry out those operations. Choose protected when subclasses should use or customize a helper, and private when it belongs only to the declaring class; the instructor prefers protected as a default, but this is a design choice.
+  ```php
+  // Before: illustrative validator; actual validation logic is omitted.
+  class ValidatesAnswer
+  {
+      public function run(string $answer): void
+      {
+          $this->checkForbiddenFunctions($answer);
+      }
+
+      public function checkForbiddenFunctions(string $answer): void
+      {
+          // Validation logic goes here.
+      }
+  }
+  ```
+  ```php
+  // After: replace the class above to expose only the intended operation.
+  class ValidatesAnswer
+  {
+      public function run(string $answer): void
+      {
+          $this->checkForbiddenFunctions($answer);
+      }
+
+      protected function checkForbiddenFunctions(string $answer): void
+      {
+          // Validation logic goes here.
+      }
+  }
+
+  $validator = new ValidatesAnswer();
+  $validator->run('echo "Hello";');
+  // Callers use run(); it coordinates the internal checks.
+  ```
+
+- **Why use a getter for a hidden property?** A public getter gives callers a method for reading a value while keeping its storage hidden and preventing direct assignment. You can later add processing inside the getter without changing the caller's method call, though the returned value's behavior may change.
+  ```php
+  // Before: independent illustrative example (PHP 8).
+  class Contact
+  {
+      public function __construct(protected string $email)
+      {
+      }
+
+      public function getEmail(): string
+      {
+          return $this->email;
+      }
+  }
+
+  $contact = new Contact('jane@example.com');
+  echo $contact->getEmail(); // jane@example.com
+  // Direct external reads or assignments to $contact->email are disallowed.
+  ```
+  ```php
+  // After: replace only getEmail() inside Contact.
+  public function getEmail(): string
+  {
+      return str_replace('@', ' at ', $this->email);
+  }
+
+  // Outside the class, the same call now returns the formatted value:
+  echo $contact->getEmail(); // jane at example.com
+  ```
+
+> **Takeaway:** Expose the operations callers need and hide internal details, so your class controls access to its data and can maintain consistent objects as its implementation evolves.
