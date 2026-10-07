@@ -810,3 +810,170 @@
   ```
 
 > **Takeaway:** Expose the operations callers need and hide internal details, so your class controls access to its data and can maintain consistent objects as its implementation evolves.
+
+## Episode 08 — From Getters and Setters to Property Hooks
+
+- **Which PHP version supports property hooks and asymmetric visibility?** Both require PHP 8.4 or later. Check your terminal's PHP version and configure your editor's PHP language level to match so it recognizes the syntax.
+  ```bash
+  php -v
+  # The reported version must be PHP 8.4 or later for the new syntax below.
+  ```
+
+- **Does a `string` type guarantee a valid email address?** It rejects values such as arrays, but any string can still be assigned. Constructor property promotion declares and initializes this public property; checking its format requires separate validation.
+  ```php
+  // Separate example: replace earlier User classes if using the same file.
+  class User
+  {
+      public function __construct(public string $email)
+      {
+      }
+  }
+
+  $user = new User('jane@example.com');
+  echo $user->email; // jane@example.com
+
+  $user->email = 'gibberish'; // Accepted: this is still a string.
+  // Invalid: $user->email = [];
+  // TypeError: cannot assign an array to a string property.
+  ```
+
+- **How do getters and setters protect a property's value?** Make the property private, expose a getter for reading, and validate in a setter before assigning. Call that setter from the constructor too, so initial values follow the same rule; `FILTER_VALIDATE_EMAIL` checks format, not whether the address exists.
+  ```php
+  // Before hooks: replace User above with this version.
+  class User
+  {
+      private string $email;
+
+      public function __construct(string $email)
+      {
+          $this->setEmail($email);
+      }
+
+      public function getEmail(): string
+      {
+          return $this->email;
+      }
+
+      public function setEmail(string $email): void
+      {
+          if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+              throw new InvalidArgumentException('Email must be valid.');
+          }
+
+          $this->email = $email;
+      }
+  }
+
+  $user = new User('jane@example.com');
+  $user->setEmail('changed@example.com');
+  echo $user->getEmail(); // changed@example.com
+
+  // Invalid: $user->setEmail('gibberish');
+  // InvalidArgumentException: Email must be valid. The old value is kept.
+  // Invalid: new User('gibberish'); // Throws the same exception.
+  // Direct external reads and writes of $user->email are disallowed.
+  ```
+
+- **How can a property hook replace a setter?** In PHP 8.4, a `set` hook intercepts assignment while callers use ordinary property syntax. Without an explicit parameter, `$value` contains the incoming value; constructor assignments run the hook too.
+  ```php
+  // After: replace the getter/setter User with this PHP 8.4 version.
+  class User
+  {
+      public string $email {
+          set {
+              if (filter_var($value, FILTER_VALIDATE_EMAIL) === false) {
+                  throw new InvalidArgumentException('Email must be valid.');
+              }
+
+              $this->email = $value;
+          }
+      }
+
+      public function __construct(string $email)
+      {
+          $this->email = $email;
+      }
+  }
+
+  $user = new User('jane@example.com');
+  $user->email = 'changed@example.com';
+  echo $user->email; // changed@example.com
+
+  // Invalid: $user->email = 'gibberish';
+  // InvalidArgumentException: Email must be valid. The old value is kept.
+  // Invalid: new User('gibberish'); // Constructor assignment also validates.
+  ```
+  ```php
+  // Alternative: replace the set hook above with an explicit parameter.
+  set(string $email) {
+      if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+          throw new InvalidArgumentException('Email must be valid.');
+      }
+
+      $this->email = $email;
+  }
+  ```
+
+- **When do you need a `get` hook, and how can hooks be shortened?** A stored property uses ordinary reads when its `get` hook is omitted. Add one to transform reads; a single expression can use `=>`, alongside a longer `set` hook. Accessing the property's own value inside its hook uses its storage without calling that hook again.
+  ```php
+  // Add inside User::$email above; keep the validating set hook.
+  get => str_replace('@', ' at ', $this->email);
+
+  // With that getter, outside the class:
+  $user = new User('jane@example.com');
+  echo $user->email; // jane at example.com
+  ```
+  ```php
+  // Independent illustrative example: a short set hook stores its result.
+  class Label
+  {
+      public string $text {
+          set => strtolower($value);
+      }
+  }
+
+  $label = new Label();
+  $label->text = 'WELCOME';
+  echo $label->text; // welcome
+  // Longer hook logic can call another method or delegate to another class.
+  ```
+
+- **How does asymmetric visibility control who may read and write?** PHP 8.4 lets these permissions differ: `public private(set)` allows external reads but limits writes to the declaring class. Omitting a setter hook on a stored public property does not block writes; private write visibility still permits internal changes, so it does not make the value immutable.
+  ```php
+  // Alternative design: replace User above with this PHP 8.4 version.
+  class User
+  {
+      public private(set) string $email;
+
+      public function __construct(string $email)
+      {
+          $this->updateEmail($email);
+      }
+
+      public function updateEmail(string $email): void
+      {
+          if (filter_var($email, FILTER_VALIDATE_EMAIL) === false) {
+              throw new InvalidArgumentException('Email must be valid.');
+          }
+
+          $this->email = $email;
+      }
+  }
+
+  $user = new User('jane@example.com');
+  echo $user->email; // jane@example.com
+  // Invalid: $user->email = 'changed@example.com';
+  // Error: cannot modify a private(set) property from outside the class.
+
+  $user->updateEmail('changed@example.com');
+  echo $user->email; // changed@example.com
+  // Invalid: $user->updateEmail('gibberish');
+  // InvalidArgumentException: Email must be valid.
+  ```
+  ```php
+  // Alternative declarations inside a class; choose one.
+  private(set) string $email;          // Public reads are implied.
+  public protected(set) string $email; // Writes allowed in the class and subclasses.
+  ```
+
+> **Takeaway:** Use property hooks to validate or transform direct property access, and asymmetric visibility to control who can assign a value.
