@@ -977,3 +977,201 @@
   ```
 
 > **Takeaway:** Use property hooks to validate or transform direct property access, and asymmetric visibility to control who can assign a value.
+
+## Episode 09 — Understanding Object Composition and Abstractions
+
+- **Why separate subscription behavior from billing implementation?** Creating, canceling, swapping plans, and invoicing describe a subscription's behavior; fetching Stripe records is part of how that behavior works. Putting both in one class mixes responsibilities, even when the Stripe helpers are protected.
+  ```php
+  // Starting design: billing operations are illustrative stubs.
+  class Subscription
+  {
+      public function create()
+      {
+          $customer = $this->getStripeCustomer();
+          // Attach a subscription to this customer; implementation omitted.
+      }
+
+      public function cancel() { /* Implementation omitted. */ }
+      public function swap(string $plan) { /* Implementation omitted. */ }
+      public function invoice() { /* Implementation omitted. */ }
+
+      protected function getStripeCustomer()
+      {
+          // Fetch the provider's customer record, not the app's User.
+      }
+
+      protected function getStripeSubscription()
+      {
+          // Fetch the provider's subscription record.
+      }
+  }
+  ```
+
+- **What does moving billing helpers into a subclass achieve?** Inheritance groups the helpers in `BillableSubscription`, but they still belong to a subscription object. Protected methods cannot be called directly by external code, such as a webhook handler that also needs to fetch a customer.
+  ```php
+  // Alternative: replace the starting design; method bodies are stubs.
+  class Subscription
+  {
+      public function create() { /* Implementation omitted. */ }
+      public function cancel() { /* Implementation omitted. */ }
+      public function swap(string $plan) { /* Implementation omitted. */ }
+      public function invoice() { /* Implementation omitted. */ }
+  }
+
+  class BillableSubscription extends Subscription
+  {
+      protected function getStripeCustomer() { /* Fetch logic omitted. */ }
+      protected function getStripeSubscription() { /* Fetch logic omitted. */ }
+  }
+
+  $subscription = new BillableSubscription();
+  // Invalid: $subscription->getStripeCustomer();
+  // Error: external code cannot call a protected method.
+  ```
+
+- **How does a trait reuse methods?** A trait is a collection of methods that classes can mix in with `use`. This shares code across classes, but the methods become part of each using class rather than a separate billing object; protected visibility still applies.
+  ```php
+  // Alternative: replace the inheritance example; bodies are stubs.
+  trait Billable
+  {
+      protected function getStripeCustomer() { /* Fetch logic omitted. */ }
+      protected function getStripeSubscription() { /* Fetch logic omitted. */ }
+  }
+
+  class Subscription
+  {
+      use Billable;
+
+      public function create()
+      {
+          $customer = $this->getStripeCustomer();
+          // Subscription creation omitted.
+      }
+  }
+  ```
+
+- **Why extract a billing portal into its own class?** Fetching billing records becomes the portal's public API, so other callers can reuse it directly. Rename `getStripeCustomer()` to `getCustomer()` because `StripeBillingPortal` already identifies the provider; visibility depends on the responsibility of the class.
+  ```php
+  // After extraction: these stubs perform no API calls or billing work.
+  class StripeBillingPortal
+  {
+      public function getCustomer()
+      {
+          // Stripe customer lookup belongs here.
+      }
+
+      public function getSubscription()
+      {
+          // Stripe subscription lookup belongs here.
+      }
+  }
+
+  $portal = new StripeBillingPortal();
+  $portal->getCustomer();
+  $portal->getSubscription();
+  ```
+
+- **What is object composition?** An object holds a reference to another object and uses it to build more complex behavior. Here, `Subscription` has a billing portal and delegates the customer lookup to it, keeping provider-specific API logic in the portal.
+  ```php
+  // Replace Subscription above; use the extracted StripeBillingPortal.
+  class Subscription
+  {
+      protected StripeBillingPortal $stripeBillingPortal;
+
+      public function __construct()
+      {
+          $this->stripeBillingPortal = new StripeBillingPortal();
+      }
+
+      public function create()
+      {
+          $customer = $this->stripeBillingPortal->getCustomer();
+          // Subscription creation omitted; the portal is still a stub.
+      }
+  }
+
+  $subscription = new Subscription();
+  $subscription->create();
+  ```
+
+- **How does dependency injection change composition?** Supply the required object from outside instead of constructing it inside the class. The caller must now provide a portal; constructor property promotion (PHP 8+) declares and assigns the protected property for us.
+  ```php
+  // After: replace Subscription above; keep StripeBillingPortal.
+  class Subscription
+  {
+      public function __construct(
+          protected StripeBillingPortal $stripeBillingPortal,
+      ) {
+      }
+
+      public function create()
+      {
+          $customer = $this->stripeBillingPortal->getCustomer();
+          // Subscription creation omitted.
+      }
+  }
+
+  $subscription = new Subscription(new StripeBillingPortal());
+  $subscription->create();
+  // Omitting the constructor argument causes an ArgumentCountError.
+  ```
+
+- **How does an interface make the dependency more flexible?** An interface declares required behavior without providing its implementation. Type the dependency as `BillingPortal` so `Subscription` can use any class implementing that contract; the caller chooses the provider.
+  ```php
+  // After: replace the previous class definitions with this PHP 8+ example.
+  // All provider methods are illustrative stubs, not SDK calls.
+  interface BillingPortal
+  {
+      public function getCustomer();
+      public function getSubscription();
+  }
+
+  class StripeBillingPortal implements BillingPortal
+  {
+      public function getCustomer() { /* Stripe lookup omitted. */ }
+      public function getSubscription() { /* Stripe lookup omitted. */ }
+  }
+
+  class BraintreeBillingPortal implements BillingPortal
+  {
+      public function getCustomer() { /* Braintree lookup omitted. */ }
+      public function getSubscription() { /* Braintree lookup omitted. */ }
+  }
+
+  class Subscription
+  {
+      public function __construct(protected BillingPortal $billingPortal)
+      {
+      }
+
+      public function create()
+      {
+          $customer = $this->billingPortal->getCustomer();
+          // Subscription creation omitted.
+      }
+  }
+
+  $subscription = new Subscription(new StripeBillingPortal());
+  $subscription->create();
+
+  // Swap the supplied object; Subscription itself needs no changes.
+  $subscription = new Subscription(new BraintreeBillingPortal());
+  $subscription->create();
+  ```
+
+- **When should you introduce an abstraction?** Depend on an interface when it offers useful flexibility now, rather than for a hypothetical future change; a concrete class can be a reasonable dependency. Many dependencies can also signal that a class has too many responsibilities and should be split.
+  ```php
+  // Alternative constructor signatures inside Subscription; choose one.
+
+  // Reasonable when a concrete provider meets the current needs:
+  public function __construct(protected StripeBillingPortal $billingPortal)
+  {
+  }
+
+  // Useful when callers need to supply different implementations:
+  public function __construct(protected BillingPortal $billingPortal)
+  {
+  }
+  ```
+
+> **Takeaway:** Compose objects to share focused behavior, inject their dependencies from outside, and use interfaces when interchangeable implementations provide useful flexibility.
