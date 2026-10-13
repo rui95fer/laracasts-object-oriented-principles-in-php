@@ -1175,3 +1175,241 @@
   ```
 
 > **Takeaway:** Compose objects to share focused behavior, inject their dependencies from outside, and use interfaces when interchangeable implementations provide useful flexibility.
+
+## Episode 10 — Object-Oriented Workshop
+
+- **How do you write a file locally, including missing folders?** Build the destination path, create its parent directory recursively only when needed, then write the content. Use `dirname()` so you create folders rather than a directory named after the file; this prototype assumes a trusted relative path and a writable storage location.
+  ```php
+  // local.php, in the project root.
+  $root = __DIR__ . '/storage';
+  $path = 'reports/hello.txt';
+  $content = 'Hello World';
+  $savePath = $root . '/' . $path;
+
+  // Mistake: mkdir($savePath, 0777, true) creates hello.txt as a directory.
+  $directory = dirname($savePath);
+
+  if (! is_dir($directory)) {
+      mkdir($directory, 0777, true);
+  }
+
+  file_put_contents($savePath, $content);
+  // 0777 is the workshop's permission setting; the system's umask can restrict it.
+  ```
+  ```text
+  Created: storage/reports/hello.txt
+  Content: Hello World
+  ```
+
+- **How does the S3 version store the same content?** Install AWS's PHP SDK and call `putObject()`: `Bucket` names the container, `Key` identifies the object within it, and `Body` supplies its content. Running this example requires valid AWS credentials and an existing bucket you may upload to; the credential variables are placeholders for configuration loaded below.
+  ```bash
+  composer require aws/aws-sdk-php
+  ```
+  ```php
+  // s3.php, in the project root.
+  require __DIR__ . '/vendor/autoload.php';
+
+  use Aws\S3\S3Client;
+
+  // $s3Key, $s3Secret, and $bucket must be supplied before this code runs.
+  $client = new S3Client([
+      'version' => 'latest',
+      'region' => 'us-east-1', // Use your bucket's region.
+      'credentials' => [
+          'key' => $s3Key,
+          'secret' => $s3Secret,
+      ],
+  ]);
+
+  $client->putObject([
+      'Bucket' => $bucket,
+      'Key' => 'reports/hello.txt',
+      'Body' => 'Hello World',
+  ]);
+  // The object key contains slashes; no local directories need creating.
+  ```
+
+- **How does Composer find your own classes?** PSR-4 autoloading maps a namespace prefix to a directory: `App\LocalStorage` belongs in `src/LocalStorage.php`. Add this mapping to `composer.json`, regenerate the autoloader, and load it from your entry point; a `use` statement alone does not load a class.
+  ```json
+  {
+      "autoload": {
+          "psr-4": {
+              "App\\": "src/"
+          }
+      }
+  }
+  ```
+  ```bash
+  # Merge the autoload section above into composer.json, keeping dependencies.
+  composer dump-autoload
+  ```
+  ```php
+  // index.php, once the class below exists.
+  require __DIR__ . '/vendor/autoload.php';
+
+  use App\LocalStorage;
+
+  $storage = new LocalStorage();
+  ```
+
+- **How does an interface make storage implementations interchangeable?** A contract declares the methods every implementation must provide, so callers can use the same `put()` method for different storage drivers. Extract the local prototype into a class implementing `FileStorage`; `void` means no return value, not a guarantee that a write succeeded.
+  ```php
+  // src/FileStorage.php
+  namespace App;
+
+  interface FileStorage
+  {
+      public function put(string $path, string $content): void;
+  }
+  ```
+  ```php
+  // src/LocalStorage.php: the local prototype becomes an implementation.
+  namespace App;
+
+  class LocalStorage implements FileStorage
+  {
+      public function put(string $path, string $content): void
+      {
+          $savePath = __DIR__ . '/../storage/' . $path;
+          $directory = dirname($savePath);
+
+          if (! is_dir($directory)) {
+              mkdir($directory, 0777, true);
+          }
+
+          file_put_contents($savePath, $content);
+      }
+  }
+  // Simplified workshop implementation: write failures are not handled here.
+  ```
+
+- **How do you keep credentials out of source code?** Move configuration to an uncommitted `.env` file and load it during application startup with `vlucas/phpdotenv`. Its immutable loader makes values available through `$_ENV`; the examples below contain placeholders, which must be replaced for a real S3 upload.
+  ```env
+  # .env, in the project root.
+  FILE_STORAGE=local
+  S3_KEY=your-access-key
+  S3_SECRET=your-secret-key
+  S3_BUCKET=your-existing-bucket
+  ```
+  ```text
+  # .gitignore: keep the real credentials out of version control.
+  .env
+  ```
+  ```bash
+  composer require vlucas/phpdotenv
+  ```
+  ```php
+  // Startup code in index.php, after loading vendor/autoload.php.
+  use Dotenv\Dotenv;
+
+  Dotenv::createImmutable(__DIR__)->load();
+
+  $s3Key = $_ENV['S3_KEY'];
+  $s3Secret = $_ENV['S3_SECRET'];
+  $bucket = $_ENV['S3_BUCKET'];
+  ```
+
+- **Why inject the S3 client and bucket through the constructor?** Constructing a client inside `put()` repeats setup on every write and ties storage behavior to configuration. Supply those dependencies from outside instead, so the storage object reuses its client and only handles uploads; constructor property promotion requires PHP 8+.
+  ```php
+  // Before: illustrative fragment inside the initial S3Storage::put().
+  $client = new S3Client([
+      // Region and credentials configured here on every call.
+  ]);
+  $client->putObject([
+      'Bucket' => $_ENV['S3_BUCKET'],
+      'Key' => $path,
+      'Body' => $content,
+  ]);
+  ```
+  ```php
+  // After: src/S3Storage.php. Replace the initial implementation.
+  namespace App;
+
+  use Aws\S3\S3Client;
+
+  class S3Storage implements FileStorage
+  {
+      public function __construct(
+          protected S3Client $client,
+          protected string $bucket,
+      ) {
+      }
+
+      public function put(string $path, string $content): void
+      {
+          $this->client->putObject([
+              'Bucket' => $this->bucket,
+              'Key' => $path,
+              'Body' => $content,
+          ]);
+      }
+  }
+  // Upload exceptions propagate to the caller, who can catch them if needed.
+  ```
+
+- **How does a factory select and construct the configured driver?** A factory builds an object, including its dependencies; `Storage::resolve()` returns an implementation of `FileStorage` selected by `FILE_STORAGE`. Check both supported values explicitly and throw for anything else, rather than silently treating a typo as S3.
+  ```php
+  // Before: illustrative resolver fragment with an unsafe fallback.
+  if ($driver === 'local') {
+      return new LocalStorage();
+  }
+  // Otherwise construct S3Storage, even if $driver is 'gibberish'.
+  ```
+  ```php
+  // After: src/Storage.php. The .env loader runs before resolve().
+  namespace App;
+
+  use Aws\S3\S3Client;
+
+  class Storage
+  {
+      public static function resolve(): FileStorage
+      {
+          $driver = $_ENV['FILE_STORAGE'];
+
+          if ($driver === 'local') {
+              return new LocalStorage();
+          }
+
+          if ($driver === 's3') {
+              return new S3Storage(
+                  new S3Client([
+                      'version' => 'latest',
+                      'region' => 'us-east-1', // Use your bucket's region.
+                      'credentials' => [
+                          'key' => $_ENV['S3_KEY'],
+                          'secret' => $_ENV['S3_SECRET'],
+                      ],
+                  ]),
+                  $_ENV['S3_BUCKET'],
+              );
+          }
+
+          throw new \Exception('Unsupported storage driver: ' . $driver);
+      }
+  }
+  ```
+
+- **What changes when you switch from local storage to S3?** Change `FILE_STORAGE` in `.env`; the calling code keeps the same `put($path, $content)` API because both drivers follow the contract. The entry point handles startup, while the factory handles object construction.
+  ```php
+  // Final index.php: replaces the earlier entry-point fragments.
+  require __DIR__ . '/vendor/autoload.php';
+
+  use App\Storage;
+  use Dotenv\Dotenv;
+
+  Dotenv::createImmutable(__DIR__)->load();
+
+  Storage::resolve()->put('hello.txt', 'Hello World');
+  echo 'Done' . PHP_EOL;
+  ```
+  ```bash
+  php index.php
+  ```
+  ```text
+  FILE_STORAGE=local     → storage/hello.txt contains Hello World
+  FILE_STORAGE=s3        → hello.txt in the configured bucket contains Hello World
+  FILE_STORAGE=gibberish → Exception: Unsupported storage driver: gibberish
+  ```
+
+> **Takeaway:** Give storage drivers a shared interface, inject their dependencies, and let a factory construct the configured driver so callers can keep using the same API.
